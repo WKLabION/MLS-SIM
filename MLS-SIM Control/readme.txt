@@ -1,11 +1,20 @@
 Code
 \Supplementary Software\MLS-SIM SystemControl
 
+Prerequisites:
+PC with Windows 10 operating system
+At least 8 GB RAM
+LabVIEW, 64-bit, version 2021 or higher
+NI DAQmx module, version 21.3 or higher
+NI Vision Acquision module, version 21.0 or higher
+NI Vision Development module, version 21.0 or higher
+Hamamatsu Video Capture library for LabVIEW, version 4418 or higher
+
+Installation guide:
+Install all the software in the prerequisites in order. The typical install time on a "normal" desktop computer is about 1 hour.
+
 Launcher.vi
 This program is the launcher for the whole system control program. This program could run directly when the camera and NI cards are connected to the computer directly (see 'wiring guide' below).
-Prerequisites:
-LabVIEW, 64-bit, version 2021 or higher.
-8GB RAM
 
 MLS-SIM.lvproj
 The project file of this LabVIEW project. This project is constructed with the actor framework.
