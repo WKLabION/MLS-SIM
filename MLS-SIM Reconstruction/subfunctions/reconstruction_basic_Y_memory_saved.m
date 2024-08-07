@@ -1,4 +1,4 @@
-function ObjRecon=reconstruction_basic_Y_memory_saved(ImgFileName, Param, illumination_calib)
+function ObjRecon=reconstruction_basic_Y_memory_saved(ImgFileName,FrameIndex,~,Param, illumination_calib)
 close all;
 
 cfft2 = @(x) fftshift(fftshift(fft2(ifftshift(ifftshift(x, 1), 2)), 1), 2);
@@ -16,14 +16,20 @@ YPixelSize = Param.YPixelSize;
 LineN=Param.LineN;
 PhaseN=Param.PhaseN;
 PixelNx=Param.PixelNx;
+PixelNy=Param.PixelNy;
+% CFLines=Param.CFLines;
 CFLinesX = Param.CFLinesX;
 CFLinesY = Param.CFLinesY;
+CFLines = union(CFLinesX, CFLinesY);
 PSFZ=Param.PSFZ;
 PSFZ_Y = Param.PSFZ_Y;
 ItN=Param.ItN;
 PhaseOptimization=Param.PhaseOptimization;
 ResolutionLimit = Param.ResolutionLimit;
 PhaseShift = Param.PhaseShift;
+ReconImgBinFactor = round(Param.XPixelSize / Param.YPixelSize / Param.PixelFineN);
+
+% ReconImgBinFactor = 1;
 
 PeriodCalibFile=Param.PeriodCalibFile;
 PhaseCalibFile=Param.PhaseCalibFile;
@@ -50,7 +56,7 @@ else
 end
 
 if ~isfield(Param, 'saturate_factor') || isempty(Param.saturate_factor)
-    saturate_factor = 0.05;
+    saturate_factor = 0.001;
 else
     saturate_factor = Param.saturate_factor;
 end
@@ -70,16 +76,22 @@ else
     PartL_X = Param.PartL_X;
 end
 
+if ~isfield(Param, 'Suffix') || isempty(Param.Suffix)
+    fname_suffix = '';
+else
+    fname_suffix = Param.Suffix;
+end
 
 
 %% load raw image
-Img=imread(strcat(ImgFileName, '.tif'));
+Img=imstackread(strcat(ImgFileName, '.tif'), FrameIndex);
 Img=reshape(double(Img),LineN,size(Img,1)/LineN,size(Img,2));
+
 PixelNy = size(Img, 2);
-if mod(PixelNy, 1920)~=0
-    PixelNy = PixelNy - mod(PixelNy, 1920);
+if mod(PixelNy, 960)~=0
+    PixelNy = PixelNy - mod(PixelNy, 960);
     Img = Img(:, 1:PixelNy, :);
-    % to remove galvo flyback lines
+    % for cut some flyback lines
 end
 Img=squeeze(Img(:,:,:));
 
@@ -110,11 +122,47 @@ if PartDiv_X~=1 && ~isempty(PartDiv_X)
     PixelNx = PixelNx*PartL_X/PartDiv_X;
     PhaseOffset = PhaseOffset(numel(PhaseOffset)*PartN_X/PartDiv_X + (1:numel(PhaseOffset)*PartL_X/PartDiv_X));
 end
-if mod(PixelNy, PhaseN*2)~=0
-    Img = Img(:, 1:PixelNy-mod(PixelNy, PhaseN*2), :);
-    PixelNy = PixelNy - mod(PixelNy, PhaseN*2);
+if mod(PixelNy, 2*PhaseN)~=0
+    PixelNy = PixelNy - mod(PixelNy, 2*PhaseN);
+    Img = Img(:, 1:PixelNy, :);
 end
 
+% which line is x or y
+if isempty(Param.X_first)
+    Raw = sum(Img(CFLines, :, :), 1);
+    Raw = reshape(Raw, 2*PhaseN, PixelNy/2/PhaseN, PixelNx);
+    Raw = permute(Raw, [2, 3, 1]);
+    a = Raw(:, :, 1:2:end);
+    a = a ./ mean(a(:));
+    b = Raw(:, :, 2:2:end);
+    b = b ./ mean(b(:));
+    fa = fft(a, [], 2);
+    fb = fft(b, [], 2);
+    shift_dx = (0:size(a, 2)-1).*(1/size(a, 2)).*reshape((0:PhaseN-1).*PeriodInPixels/PhaseN, 1, 1, []);
+    fa = fa .* exp(1i*shift_dx);
+    fb = fb .* exp(1i*shift_dx);
+    a = abs(ifft(sum(fa, 3), [], 2));
+    b = abs(ifft(sum(fb, 3), [], 2));
+    a = a - imgaussfilt(a, PeriodInPixels*2);
+    b = b - imgaussfilt(b, PeriodInPixels*2);
+    a = max(a, 0);
+    b = max(b, 0);
+    fa = fft(a, [], 2);
+    fb = fft(b, [], 2);
+    fa = max(abs(fa), [], 1);
+    fb = max(abs(fb), [], 1);
+
+    T_idx = size(a, 2)/PeriodInPixels;
+    T_idx = floor(T_idx) + (-15:+15);
+    Param.X_first = sum(fa(T_idx)) > sum(fb(T_idx));
+
+    if Param.X_first
+        disp('is x first ------------------')
+    else
+        disp('not x first')
+    end
+end
+Img = Img ./ mean(Img, 'all');
 Img=permute(Img,[2 3 1]); %[y x lines]
 
 
@@ -126,12 +174,13 @@ else
     ys_start = 1;
 end
 ImgSP = Img;
+Img_Y = Img(ys_start:2:end, :, :);
 Img = Img(xp_start:2:end, :, :);
 
 
 %% load phase measurement
 PhaseMeasure=dlmread(strcat(ImgFileName, ".txt"));
-PhaseMeasure=squeeze(PhaseMeasure);
+PhaseMeasure=squeeze(PhaseMeasure(FrameIndex,:));
 if PartDiv~=1 && ~isempty(PartDiv)
     PhaseMeasure = PhaseMeasure(numel(PhaseMeasure)*PartN/PartDiv + (1:numel(PhaseMeasure)*PartL/PartDiv));
 end
@@ -148,6 +197,7 @@ PhaseMeasureGroup=reshape(PhaseMeasure,PhaseN,length(PhaseMeasure)/PhaseN);
 PhaseMeasureCorr=PhaseMeasureGroup'*PhaseMeasureY;
 [~, TmpIndex]=max(PhaseMeasureCorr,[],2);
 PhaseMeasureFit=TmpIndex*2*pi/PhaseFineN;
+% figure(1);plot(PhaseMeasureFit);title('measured phase');
 
 %% optimize phase use experimental data
 if PhaseOptimization==1
@@ -163,8 +213,10 @@ if PhaseOptimization==1
             Corr(ii)=Corr(ii)+sum(Ref.*Img(jj,:,LineIndex));
         end
     end
+%     figure(1000);plot(Corr);
     [~, TmpIndex]=max(Corr);
     PhaseMeasureFit=PhaseMeasureFit+PhaseSearch(TmpIndex);
+%     disp(PhaseSearch(TmpIndex));
 end
 
 
@@ -229,6 +281,7 @@ PSFTot_Y = gpuArray(single(PSFTot_Y));
 
 NormalizationX = zeros([size(ImgFineX, 1), size(ImgFineX, 2), size(PSFTot, 3)],'single', 'gpuArray');
 NormalizationY = zeros([size(ImgFineY, 1), size(ImgFineY, 2), size(PSFTot, 3)],'single', 'gpuArray');
+
 for line_idx = 1:numel(CFLinesX)
     for phase_idx = 1:numel(PSFXPick)
         for z_idx = 1:numel(PSFZ)
@@ -250,7 +303,10 @@ for line_idx = 1:numel(CFLinesY)
 end
 NormalizationX = fftshift2(NormalizationX);
 NormalizationY = fftshift2(NormalizationY);
+% NormalizationX=norm_mean(NormalizationX);
+% NormalizationY=norm_mean(NormalizationY);
 
+% PSFTot = cat(4, PSFTot, PSFTot_Y);
 clearvars fPhaseMask mask_weight;
 
 %% Resolution Limit Filter
@@ -262,6 +318,9 @@ dkx = 2 * pi / dx / W; dky = 2 * pi / dy / H;
 kx = dkx .* X; ky = dky .* Y;
 kx_limit = 2*pi/ResolutionLimit(1); ky_limit = 2*pi/ResolutionLimit(2);
 OTF_mask = ((kx./kx_limit).^2+(ky./ky_limit).^2) <= 1 ;
+% OTF_decay = 0.01 + 0.99 .* (1 - sqrt((kx./kx_limit).^2+(ky./ky_limit).^2));
+% OTF_mask = OTF_decay .* OTF_mask;
+% figure(8000), imagesc(OTF_mask);
 
 %% Reconstruction
 PhaseMask=gpuArray(PhaseMask);
@@ -274,14 +333,16 @@ ObjReconAvgY=gpuArray(zeros(size(ObjRecon),'single'));
 OTF_mask = gpuArray(single(OTF_mask));
 
 if PartDiv~=1 && ~isempty(PartDiv)
-    ImgFileName = [ImgFileName, '_p', num2str(PartN), 'd', num2str(PartDiv)];
+    ImgFileName = strcat(ImgFileName, '_p', num2str(PartN), 'd', num2str(PartDiv));
 end
-
+% figure(20);
 for ii=1:max(ItN)
     disp(['iteration: ' num2str(ii) ' of ' num2str(max(ItN))]);
     ObjReconAvgX=ObjReconAvgX*0;
     ObjReconAvgY=ObjReconAvgY*0;
     
+%     residualx = 0;
+%     residualy = 0;
     for psf_idx = 1:numel(PSFXPick)
         for Lineidx = 1:numel(CFLinesX)
             PSFTemp = padarray(PSFTot(:, :, :, psf_idx, Lineidx),...
@@ -292,6 +353,16 @@ for ii=1:max(ItN)
             ImgFineEst = fftshift(ImgFineEst);
     
             Ratio=ImgFineX(:,:,psf_idx,Lineidx)./ImgFineEst;
+            
+            %%%%%
+%             if ii==ItN
+%                 temp1 = sum((ImgFineEst-ImgFineX(:,:,psf_idx,Lineidx)).^2 .* PhaseMask(:,:,psf_idx,CFLinesX(Lineidx)), 'all');
+%                 temp2 = sum(ImgFineEst.*PhaseMask(:,:,psf_idx,CFLinesX(Lineidx)), 'all');
+%                 temp3 = sum(ImgFineX(:,:,psf_idx,Lineidx).*PhaseMask(:,:,psf_idx,CFLinesX(Lineidx)), 'all');
+%                 residualx = residualx + temp1./temp2./temp3;
+%             end
+            %%%%%
+
             Ratio = Ratio .* PhaseMask(:,:,psf_idx,CFLinesX(Lineidx));
             ObjReconAvgX = ObjReconAvgX + ObjRecon.*fftshift2(m0r(ifft2(fft2(Ratio).*conj(OTFTemp))));              
         end
@@ -307,7 +378,15 @@ for ii=1:max(ItN)
 
         Ratio=ImgFineY(:,:,end,Lineidx)./ImgFineEst;
 
-       
+        %%%%%
+%         if ii==ItN
+%                 temp1 = sum((ImgFineEst-ImgFineY(:,:,end,Lineidx)).^2 .* PhaseMask(:,:,end,CFLinesY(Lineidx)), 'all');
+%                 temp2 = sum(ImgFineEst.*PhaseMask(:,:,end,CFLinesY(Lineidx)), 'all');
+%                 temp3 = sum(ImgFineY(:,:,end,Lineidx).*PhaseMask(:,:,end,CFLinesY(Lineidx)), 'all');
+%                 residualy = residualy + temp1./temp2./temp3;
+%         end
+        %%%%%
+
         Ratio = Ratio .* PhaseMask(:,:,end,CFLinesY(Lineidx));
         ObjReconAvgY = ObjReconAvgY + ObjRecon.*fftshift2(m0r(ifft2(fft2(Ratio).*conj(OTFTemp))));
     end
@@ -320,12 +399,19 @@ for ii=1:max(ItN)
 
     subplot(121);imagesc(ObjRecon(:,:,1));
     subplot(122);imagesc(ImgFineEst);
+
     if ismember(ii, ItN)
-        ObjReconFinal = gather(ObjRecon)*200;
-        imstackwrite(strcat(ImgFileName, '_itr', num2str(ii), '.tif'), ...
-            uint16(imbin(ObjReconFinal(:, :, :), 5, 1)));
+        ObjReconFinal = gather(ObjRecon);
+        scaling_factor = 65535./max(ObjReconFinal(:, :, 1), [], 'all');
+        scaling_factor = floor(log10(scaling_factor)/2)*2;
+%         scaling_factor = 4;
+        ObjReconFinal = ObjReconFinal.*10^scaling_factor;
+        imstackwrite(strcat(ImgFileName, '_itr', num2str(ii), fname_suffix, '.tif'), ...
+            uint16(imbin(ObjReconFinal(:, :, 1), ReconImgBinFactor, 1)));
     end
 end
+% disp(residualx);
+% disp(residualy);
 clearvars ImgFineEst ImgFineX ImgFineY ...
     ObjRecon ObjReconAvgX ObjReconAvgY ...
     padded_PSF PSFTemp Ratio PhaseMask;
